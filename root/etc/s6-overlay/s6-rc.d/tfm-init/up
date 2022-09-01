@@ -1,0 +1,3 @@
+with-contenv
+
+/etc/s6-overlay/s6-rc.d/tfm-init/tfm-init.sh
