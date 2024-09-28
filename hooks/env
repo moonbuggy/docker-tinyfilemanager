@@ -1,15 +1,19 @@
 #! /usr/bin/env bash
 # shellcheck shell=bash disable=SC2034
 
-MANIFEST_TOOL_REPO="estesp/manifest-tool"
 WHEEL_REPO="${WHEEL_REPO:-moonbuggy2000/python-alpine-wheels}"
+# MANIFEST_TOOL_GIT_REPO="estesp/manifest-tool"
+MANIFEST_TOOL_DOCKER_IMAGE="mplatform/manifest-tool:alpine-v2.0.6"
 
 DATA_DIR='.build_data'
 QEMU_DIR='.qemu_static'
 IMPORTS_DIR='.imports'
 
 ARCH_YAML='arch.yaml'
-CONFIG_YAML="${DATA_DIR}/config.${DOCKER_TAG}${CONFIG_SUFFIX}.yaml"
+CONFIG_YAML="${CONFIG_YAML_OVERRIDE:-${DATA_DIR}/config.${DOCKER_TAG}${CONFIG_SUFFIX}.yaml}"
+
+# names of debian releases
+debian_names=('null' 'buzz' 'hamm' 'woody' 'etch' 'lenny' 'squeeze' 'wheezy' 'jessie' 'stretch' 'buster' 'bullseye' 'bookworm' 'trixie')
 
 #BUILD_PLATFORM_ARG='true'
 
@@ -23,6 +27,7 @@ CACHE_EXPIRY=604800
 DOCKER_FILE='Dockerfile'
 
 [ ! -d "${DATA_DIR}" ] && mkdir -p "${DATA_DIR}"
+[ ! -f "${CONFIG_YAML}" ] && touch "${CONFIG_YAML}"
 
 ## import config for this repo
 . "build.conf" || { echo 'No build.conf!'; exit 1; }
@@ -43,13 +48,37 @@ add_param () {
 print_param () { printf '%-40s %-8s\n' "${2}" "${1}"; }
 add_print_param () { add_param "${1}" "${2}"; print_param "${1}" "${3:-${2}}"; }
 
-# only execute code to determine the parameter if it's unset, otherwise use the
-# existing set value
+# similar to the commands above, but do an 'eval' here so we don't need to use
+# "$(..)" when calling the function
+#
+# the 'ifn' functions only execute code to determine the parameter if it's unset,
+# otherwise using the existing set value
 #
 # these have arguments in different positions than the add/print_param functions
 #
-#	eval_param_ifn       <param> <command>
-#	eval_print_param_ifn <param> <desc> <command>
+#	eval_param            <param> <command>
+#	eval_print_param      <param> <desc> <command>
+#	eval_param_ifn        <param> <command>
+#	eval_print_param_ifn  <param> <desc> <command>
+eval_param () {
+	local param
+	local command
+
+	param="${1}"
+	IFS=' ' read -a command <<< "${2}"
+
+	# [ ! -z "${DEBUG+set}" ] \
+	# 	&& >&2 echo "eval_param command: ${command[*]}"
+	add_param "$(eval "${command[*]}")" "${param}"
+}
+
+eval_print_param () {
+	local desc
+	[ ! -z "${3}" ] && desc="${2}"
+	eval_param "${1}" "${3:-${2}}"
+	print_param "${!1}" "${desc:-${1}}"
+}
+
 eval_param_ifn () {
 	local param
 	local command
@@ -58,12 +87,13 @@ eval_param_ifn () {
 	param="${1}"
 	IFS=' ' read -a command <<< "${2}"
 
-	[ ! -z "${DEBUG+set}" ] \
-		&& >&2 echo "eval_param_ifn command: ${command[*]}"
-
-	[ -z "${!param}" ] \
-		&& value="$(eval "${command[*]}")" \
-		|| value="${!param}"
+	if [ -z "${!param}" ]; then
+		value="$(eval "${command[*]}")"
+	else
+		# [ ! -z "${DEBUG+set}" ] \
+		# 	&& >&2 echo "eval_param_ifn: value exists"
+		value="${!param}"
+	fi
 
 	add_param "${value}" "${param}"
 }
@@ -71,9 +101,31 @@ eval_param_ifn () {
 eval_print_param_ifn () {
 	local desc
 	[ ! -z "${3}" ] && desc="${2}"
-
 	eval_param_ifn "${1}" "${3:-${2}}"
 	print_param "${!1}" "${desc:-${1}}"
+}
+
+function cleanup() { tput cnorm; }
+trap cleanup EXIT
+
+spinner() {
+	local pid=$!
+	local delay=0.5
+	local i=0
+
+	tput civis
+	while ps -a | awk '{print $1}' | grep -q "${pid}"; do
+	    c=`expr ${i} % 4`
+	    case ${c} in
+	       0) printf '/' ;;
+	       1) printf '-' ;;
+	       2) printf '\\' ;;
+	       3) printf '|' ;;
+	    esac
+	    i=`expr ${i} + 1`
+	    sleep $delay
+	    printf "\b"
+	done
 }
 
 ## curl the provided URL, handle errors and cache
@@ -85,18 +137,22 @@ get_url () {
 	cache_file="${DATA_DIR}/$(echo "${1}" | md5sum | cut -d' ' -f1)"
 
 	if [ -f "${cache_file}" ] && [ "$(( $(date +"%s") - $(date -r "${cache_file}" +"%s") ))" -lt "${CACHE_EXPIRY}" ]; then
+		[ ! -z "${DEBUG}" ] && >&2 echo "Using cache for URL: ${1}"
 		cat "${cache_file}"
 	else
-		page_data="$(curl -sL -w "%{http_code}\n" "${1}")"
+		>&2 printf 'Getting URL: %s.. ' "${1}"
+		page_data=$(curl -sL -w '%{http_code}\n' "${1}")
 		http_code="${page_data:(-3)}"
+
 		if [ "${http_code}" = "200" ]; then
 			echo "${page_data%???}" | tee "${cache_file}"
 		else
 			>&2 echo "URL: ${1}"
 			>&2 echo "cache file: $(echo "${1}" | md5sum | cut -d' ' -f1)"
-			>&2 echo "HTTP Error: ${http_code}"
+			>&2 printf 'HTTP Error: %s\n\n' "${http_code}"
 			return 1
 		fi
+		>&2 printf "\r$(tput el)"
 	fi
 }
 
@@ -156,14 +212,14 @@ debian_package_version () {
 	fi
 
 	# either of these works
-#	package_version="$(get_url "https://sources.debian.org/api/src/${package}/" | grep -oP "\"suites\"[^}]*${debian_release}\"[^}]*version\D*\K[0-9\.\-]*")"
-	package_version="$(get_url "https://sources.debian.org/api/src/nginx/${debian_release}/" | grep -oP 'version"\:"\K([^\"]*)' | cut -d'+' -f1)"
+	package_version="$(get_url "https://sources.debian.org/api/src/${package}/" | grep -oP "\"suites\"[^}]*${debian_release}\"[^}]*version\D*\K[0-9\.\-]*")"
+	# package_version="$(get_url "https://sources.debian.org/api/src/${package}/${debian_release}/" | grep -oP 'version"\:"\K([^\"]*)' | cut -d'+' -f1)"
 
 	echo "${package_version}"
 }
 
 # pypi_api_XXXX <project>
-pypi_api_data () {	get_url "https://pypi.org/simple/${1}"; }
+pypi_api_data () { get_url "${PYPI_INDEX:-https://pypi.org/simple}/${1}"; }
 pypi_api_versions () { pypi_api_data "${1}" | grep -oP "(?<=${1}-)[0-9.]{4,}(?=.tar.gz)" | sort -uV; }
 pypi_api_latest_version () { pypi_api_versions "${1}" | tail -n1; }
 
@@ -171,11 +227,14 @@ pypi_api_latest_version () { pypi_api_versions "${1}" | tail -n1; }
 py_musl_wheel_versions () { docker_api_repo_tags "${WHEEL_REPO}" | grep -oP "${1}\K([0-9.]+)(?=-py)" | sort -uV; }
 py_musl_wheel_latest () { py_musl_wheel_versions "${1}" | tail -n1; }
 
-parse_version_major () { echo "${1}" | awk -F \. '{print $1}'; }
-parse_version_minor () { echo "${1}" | awk -F \. '{print $1"."$2}'; }
+# return the 'X' for any 'X.Y.Z' versions provided as arguments
+parse_version_major () { echo "${1}" | xargs -n1 | grep -oP '(^\d*)' | sort -uV ; }
+
+# return the 'X.Y' for any 'X.Y.Z' versions provided as arguments
+parse_version_minor () { echo "${1}" | xargs -n1 | grep -oP '(^\d*\.\d*)' | sort -uV; }
 
 #
-# py_requireed_vesion() and python_get_module_from_string() needs a refactor,
+# py_required_vesion() and python_get_module_from_string() needs a refactor,
 # the whole python wheel thing was tacked on at the end, not really planned
 #
 
@@ -310,7 +369,7 @@ docker_api_get_repo () {
 	local repo && repo="${1}"
 	[[ "${repo}" != *"/"* ]] && repo="library/${repo}"
 
-	URL="https://registry.hub.docker.com/v2/repositories/${repo}/tags?page_size=100"
+	URL="https://registry.hub.docker.com/v2/repositories/${repo}/tags?page_size=1000"
 	while [ -n "${URL}" ]; do
 #		>&2 echo "Getting: ${URL}"
 		page="$(get_url "${URL}")"
@@ -350,14 +409,21 @@ docker_container_contents () {
 
 	[ -n "${NOOP+set}" ] && [ -z "${WHEELS_FORCE_PULL+set}" ] && echo 'Status: [NOOP]' && return
 
-	if [ -z "${WHEELS_FORCE_PULL+set}" ] && docker inspect "${import_image}" > /dev/null 2>&1; then
+	if [ -z "${WHEELS_FORCE_PULL+set}" ] && docker inspect "${import_image}" >/dev/null 2>&1; then
 		echo "Status: Using existing local image."
 	elif ! docker pull "${import_image}" 2>/dev/null | grep Status; then
 		echo "Status: Image not found."
 		return
 	fi
 
-	docker save "${import_image}" | tar --wildcards -xf - -O -- */layer.tar | tar "${tar_args}" -ixf - -C "${output_dir}"
+	# this maybe stopped working in a Docker version released 2023/2024
+	# docker save "${import_image}" | tar --wildcards -xf - -O -- */layer.tar | tar "${tar_args}" -ixf - -C "${output_dir}"
+
+	# this is slower but will work instead
+	echo "FROM ${import_image}" >_tempDockerfile
+	docker build -q -o _tempContents -f _tempDockerfile . >/dev/null
+	cp _tempContents/* "${output_dir}"
+	rm -rf _tempContents _tempDockerfile >/dev/null 2>&1
 }
 
 ## parse YAML configuration
@@ -423,12 +489,9 @@ get_manifest_tool () {
 	if [ -n "${existing_tool}" ]; then
 		echo "${existing_tool}"
 	else
-		if [ ! -f manifest-tool ]; then
-			LATEST_MANIFEST_TOOL="$(git_latest_release "${MANIFEST_TOOL_REPO}")"
-			curl -sLo "manifest-tool" "https://github.com/${MANIFEST_TOOL_REPO}/releases/download/${LATEST_MANIFEST_TOOL}/manifest-tool-linux-$(get_this_arch)"
-		fi
-		chmod a+x "manifest-tool"
-		echo './manifest-tool'
+		# the binaries are no longer available indivudally, only as an archive
+		# it's easier to use the Docker image than bother untaring and copying files
+		echo "docker run --rm ${MANIFEST_TOOL_DOCKER_IMAGE}"
 	fi
 }
 
@@ -449,15 +512,20 @@ get_manifest() {
 
 	manifest_file="${DATA_DIR}/manifest.${source_repo//\//_}.${source_image##*:}"
 
-	if [ ! -f "${manifest_file}" ] || [ "$(( $(date +"%s") - $(date -r "${manifest_file}" +"%s") ))" -gt "${CACHE_EXPIRY}" ]; then
-		>&2 printf 'Fetching manifest: %s.. ' "${source_image}"
+	>&2 tput civis
 
-		manifest_cmd=("$(get_manifest_tool)" 'inspect' "${source_image}")
+	if [ ! -f "${manifest_file}" ] || [ "$(( $(date +"%s") - $(date -r "${manifest_file}" +"%s") ))" -gt "${CACHE_EXPIRY}" ]; then
+		>&2 printf 'Fetching manifest: %s..           \b\b\b\b\b\b\b\b\b\b' "${source_image}"
+
+		IFS=' ' read -a manifest_cmd <<< "$(get_manifest_tool)"
+		manifest_cmd+=('inspect' "${source_image}")
 		# pretty_manifest_cmd="$(echo "${manifest_cmd[*]}" | sed -r -e "s/(--)/\\\ \n\t\1/g")"
 		# >&2 printf '\n--- manifest command ---\n%s\n' "${pretty_manifest_cmd}"
 
+		# the spinner used in this way prevents 'error' being set
 		local error
-		error="$("${manifest_cmd[@]}" 2>&1 1>"${manifest_file}")";
+		error="$("${manifest_cmd[@]}" 2>&1 1>"${manifest_file}")" #&
+		# >&2 spinner
 
 		# if there's an error try and determine the cause so we can decide whether to
 		# cache the failure by keeping the empty manifest file:
@@ -485,11 +553,27 @@ get_manifest() {
 			return 1
 		fi
 
-		>&2 echo
+		>&2 printf '\r'
 	# else
 	# 	>&2 printf 'Using cached manifest: %s\n' "${manifest_file}"
 	fi
+	>&2 tput cnorm
 	echo "${manifest_file}"
+}
+
+## get the arch+varient from a manifest file
+#
+# get_manifest_tool <manifest file> (<arch count>)
+#
+get_arch_from_manifest () {
+	[ x"${2}" == x"" ] \
+		&& unset count_string \
+		|| count_string="\[${2}\]"
+
+	arch_string="$(sed -n -e 's|'${count_string}'.*Arch:\s*\(\w*\)|\1|p' "${1}")"
+	arch_string+="$(sed -n -e 's|'${count_string}'.*Variant:\s*\(\w*\)|\1|p' "${1}") "
+	[ ! -z "${DEBUG}" ] && >&2 printf "\t${2} ${arch_string}\n"
+	echo "${arch_string}"
 }
 
 # ifFunc <func>

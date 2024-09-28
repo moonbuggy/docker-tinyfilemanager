@@ -10,14 +10,15 @@ FROM --platform="${BUILDPLATFORM}" moonbuggy2000/fetcher:latest AS fetcher
 
 ARG TEMP_DIR="/fetcher_temp"
 WORKDIR "${TEMP_DIR}"
-RUN wget -qO- https://github.com/prasathmani/tinyfilemanager/archive/refs/tags/2.4.7.tar.gz \
+
+ARG TFM_VERSION="2.4.7"
+RUN wget -qO- "https://github.com/prasathmani/tinyfilemanager/archive/refs/tags/${TFM_VERSION}.tar.gz" \
       | tar fxz - --strip-components=1
 
 WORKDIR /fetcher_root
 RUN cp "${TEMP_DIR}/tinyfilemanager.php" ./index.php \
-  && cp "${TEMP_DIR}/config-sample.php" ./config.php
-
-RUN mkdir files
+  && wget -qO config.php https://tinyfilemanager.github.io/config-sample.txt \
+  && mkdir files
 
 # configure files in 'files/' and dark theme
 RUN sed -E \
@@ -35,7 +36,15 @@ RUN sed -E \
 FROM "${FROM_IMAGE}"
 
 ARG PHP_PACKAGE="php7"
-RUN apk add --no-cache \
+# use a local APK caching proxy, if one is provided
+ARG APK_PROXY=""
+RUN if [ ! -z "${APK_PROXY}" ]; then \
+    alpine_minor_ver="$(grep -o 'VERSION_ID.*' /etc/os-release | grep -oE '([0-9]+\.[0-9]+)')"; \
+    mv /etc/apk/repositories /etc/apk/repositories.bak; \
+    echo "${APK_PROXY}/alpine/v${alpine_minor_ver}/main" >/etc/apk/repositories; \
+    echo "${APK_PROXY}/alpine/v${alpine_minor_ver}/community" >>/etc/apk/repositories; \
+  fi \
+  && apk add --no-cache \
     libzip-dev \
     oniguruma-dev \
     "${PHP_PACKAGE}-ctype" \
@@ -45,7 +54,8 @@ RUN apk add --no-cache \
     "${PHP_PACKAGE}-mbstring" \
     "${PHP_PACKAGE}-phar" \
     "${PHP_PACKAGE}-session" \
-    "${PHP_PACKAGE}-zip"
+    "${PHP_PACKAGE}-zip" \
+  && (mv /etc/apk/repositories.bak /etc/apk/repositories || true)
 
 COPY root/ /
 

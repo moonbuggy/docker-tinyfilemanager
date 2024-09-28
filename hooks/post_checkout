@@ -7,7 +7,7 @@ echo '--- post_checkout ---'
 
 [ ! -d "${DATA_DIR}" ] && mkdir -p "${DATA_DIR}"
 
-cat "${ARCH_YAML}" > "${CONFIG_YAML}"
+cat "${ARCH_YAML}" > "${CONFIG_YAML}" || exit 0
 
 ## parse arch config
 #
@@ -98,10 +98,11 @@ else
 	#
 	# otherwise use the multi-arch manifest we pulled earlier, SOURCE_MANIFEST
 	#
+	unset source_arches
+
 	if [ -n "${SOURCE_ARCHES:-}" ]; then
 		source_arches="${SOURCE_ARCHES}"
-	elif [ ! -z "${SOURCE_ARCH_PREFIX+set}" ] && [ -z "${BUILD_BUILDX}" ]; then
-		unset source_arches
+	elif [ ! -z "${SOURCE_ARCH_PREFIX+set}" ]; then
 		for arch in ${configured_arches}; do
 			arch_prefix_var="${arch}_QEMU_PREFIX"
 			import_image="${!arch_prefix_var:-_}/${SOURCE_REPO}:${SOURCE_TAG}"
@@ -109,8 +110,24 @@ else
 		done
 	else
 		print_param "${SOURCE_MANIFEST}" 'Source manifest'
-		source_arches="$(sed -n -e 'N;s/.*Arch:\s*\(\w*\)\n.*Variant:\s*\(\w*\)/\1\2/p;D;' "${SOURCE_MANIFEST}" \
-			| sed -e 's/[^\w]*386/i386/' | sort -u | xargs)"
+
+		# this fails if there is no "Variant"
+		# source_arches="$(sed -n -e 'N;s/.*Arch:\s*\(\w*\)\n.*Variant:\s*\(\w*\)/\1\2/p;D;' "${SOURCE_MANIFEST}" \
+		# 	| sed -e 's/[^\w]*386/i386/' | sort -u | xargs)"
+
+		arch_count="$(grep -oP '^\[[0-9]*\]' "${SOURCE_MANIFEST}" | tail -1 | grep -o '[0-9]*')"
+
+		[ ! -z "${DEBUG}" ] && >&2 echo 'processing manifest:'
+
+		if [ ! -n "${arch_count}" ]; then
+			source_arches="$(get_arch_from_manifest "${SOURCE_MANIFEST}")"
+		else
+			n=0; until [ "${n}" == "${arch_count}" ]; do
+				n=$((n+1))
+				source_arches+="$(get_arch_from_manifest "${SOURCE_MANIFEST}" "${n}")"
+			done
+			source_arches="$(echo ${source_arches} | xargs -n1 | sed -e 's/[^\w]*386/i386/' | sort -u | xargs)"
+		fi
 	fi
 
 	# default arch if manifest-tool doesn't return anything useful

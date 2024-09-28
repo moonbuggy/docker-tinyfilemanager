@@ -1,18 +1,27 @@
 # Tiny File Manager
-[Tiny File Manager][TFM] in an Alpine Docker container with Nginx and PHP-FPM, for multiple architectures.
+[Tiny File Manager][TFM] in an Alpine Docker container with Nginx and PHP-FPM,
+for multiple architectures.
 
 ## Description
-The official Docker image uses PHP's built-in web server. Nginx should perform better in production environments.
+The official Docker image uses PHP's built-in web server. Nginx should perform
+better in production environments.
 
 The container listens on two ports:
 *   `8080`  - the Tiny File Manager webUI
-*   `8081`  - web root set to file storage location, HTML and PHP served as plain text
+*   `8081`  - file storage location as web root, plain text HTML and PHP
 
-Basically, the webUI is accessible at `https://<host>:8080/` only, but files at `https://<host>:8080/files/*` are also accessible at `https://<host>:8081/*`. HTML and PHP files will be rendered if accessed via the former, but not by the latter.
+Basically, the webUI is accessible at `https://<host>:8080/` only, but files at
+`https://<host>:8080/files/*` are also accessible at `https://<host>:8081/*`.
+HTML and PHP files will be rendered if accessed via the former, but not by the
+latter.
 
-This provides an easy/lazy method for configuring the management webUI and files to be accessible on separate (sub)domains, via an appropriately configured downstream reverse proxy. As files are also accessible via the webUI's port in the normal way, doing anything at all with port `8081` is optional.
+This provides an easy/lazy method for configuring the management webUI and files
+to be accessible on separate (sub)domains, via an appropriately configured
+downstream reverse proxy. As files are also accessible via the webUI's port in
+the normal way, doing anything at all with port `8081` is optional.
 
-For a more detailed description of Tiny File Manager and its configuration see the [source repo][TFM].
+For a more detailed description of Tiny File Manager and its configuration see
+the [source repo][TFM].
 
 ## Usage
 ```
@@ -23,12 +32,15 @@ docker run -d --name TinyFileManager \
   moonbuggy2000/tinyfilemanager:latest
 ```
 
-Custom configuration can be done via the enviornment or by persisting and editing the `config.php` file.
+Custom configuration can be done via the enviornment or by persisting and
+editing the `config.php` file.
 
 ### Volumes
-Files are stored in `/var/www/html/files/`, so this folder will need to be mounted to persist data.
+Files are stored in `/var/www/html/files/`, so this folder will need to be
+mounted to persist data.
 
-The Tiny File Manager configuration file is at `/var/www/html/config.php`, and this can be mounted for any custom configuration that's required.
+The Tiny File Manager configuration file is at `/var/www/html/config.php`, and
+this can be mounted for any custom configuration that's required.
 
 ### Environment variables
 *   `PUID`          - user ID to run as (default: `1000`)
@@ -38,7 +50,9 @@ The Tiny File Manager configuration file is at `/var/www/html/config.php`, and t
 *   `TFM_*`         - wildcard for `config.php` parameters
 
 #### TFM_*
-Parameters in `/var/www/html/config.php` can be set from matching environment variables prepended with `TFM_`. String values should be quoted and those quote will need to be escaped.
+Parameters in `/var/www/html/config.php` can be set from matching environment
+variables prepended with `TFM_`. String values should be quoted and those quote
+will need to be escaped.
 
 For example: `docker run -e TFM_HTTP_HOST=\'host.local\' ..`
 
